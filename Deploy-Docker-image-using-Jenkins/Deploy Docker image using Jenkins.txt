@@ -1,0 +1,117 @@
+1.	Git
+i.	Create a repo
+ii.	Create a “Dockerfile” in the repo – 
+# Use the official Nginx image as the base image
+FROM nginx:latest
+
+# Copy the HTML
+COPY index.html /usr/share/nginx/html/
+
+# Expose port 80 to allow external access
+EXPOSE 80
+iii.	Create a basic html file as “index.html” –
+<!DOCTYPE html>
+<html>
+<body>
+<h1>My First Heading</h1>
+<p>My first paragraph.</p>
+</body>
+</html>
+       
+2.	Ec2 Setup
+i.	Create a t2.large Ec2 instance
+ii.	Install Jenkins from (https://www.jenkins.io/download/)
+iii.	Install docker
+1.	sudo apt update    
+2.	sudo apt install docker.io -y
+iv.	Go to Jenkins dashboard
+1.	Create a new job
+2.	In Git Section - provide git url, credentials, branch
+3.	In Build Triggers select - GitHub hook trigger for GITScm polling
+4.	In Build Steps  Execute shell – 
+i.	First Container
+#!/bin/bash
+sudo docker build -t mydockerimage:latest .
+sudo docker run -d -p 80:80 --name mywebapp mydockerimage:latest
+
+ii.	For code upgrade
+#!/bin/bash
+# Authenticate with Docker Hub securely
+echo "Logging in to Docker Hub..."
+echo "docker password or token" |sudo docker login --username dockerusername --password-stdin
+
+# Build the Docker image with the correct tag
+sudo docker build -t dockerusername/mydockerimage:latest .
+
+# Push the image to Docker Hub
+sudo docker push dockerusername/mydockerimage:latest
+
+# Stop and remove the mywebapp_new_temp container if it exists
+if sudo docker ps -a --format '{{.Names}}' | grep -Eq '^mywebapp_new_temp$'; then
+    echo "Stopping and removing existing mywebapp_new_temp container..."
+    sudo docker stop mywebapp_new_temp
+    sudo docker rm mywebapp_new_temp
+fi
+
+# Run a new container with the updated image on port 81:80
+echo "Starting a new container with the updated image..."
+sudo docker run -d -p 81:80 --name mywebapp_new_temp \
+    --restart always \
+    --health-cmd='curl -f http://localhost/ || exit 1' \
+    --health-interval=30s \
+    --health-retries=3 \
+    --health-start-period=30s \
+    dockerusername/mydockerimage:latest
+
+# Wait for the new container to become healthy
+echo "Waiting for the new container to become healthy..."
+health_check_timeout=300  # 5 minutes timeout
+start_time=$(date +%s)
+while true; do
+    current_time=$(date +%s)
+    elapsed_time=$((current_time - start_time))
+    if [ $elapsed_time -ge $health_check_timeout ]; then
+        echo "Timeout reached. New container failed to become healthy within $health_check_timeout seconds."
+        echo "Aborting..."
+        sudo docker stop mywebapp_new_temp
+        sudo docker restart mywebapp
+        exit 1
+    fi
+
+    if [ "$(sudo docker inspect --format='{{.State.Health.Status}}' mywebapp_new_temp)" == "healthy" ]; then
+        echo "New container is healthy."
+        break
+    else
+        echo "New container is not yet healthy. Checking again in 5 seconds..."
+        sleep 5
+    fi
+done
+
+# Stop the old container and rename it to a temporary name
+echo "Stopping the old container and renaming it..."
+if sudo docker ps -a --format '{{.Names}}' | grep -Eq '^mywebapp_old_temp$'; then
+    sudo docker stop mywebapp_old_temp
+    sudo docker rm mywebapp_old_temp
+fi
+
+sudo docker stop mywebapp
+sudo docker rename mywebapp mywebapp_old_temp
+
+# Redirect traffic to the new container and map port 81 on the host to port 80 on the container
+echo "Redirecting traffic to the new container..."
+sudo docker stop mywebapp_new_temp
+sudo docker run -d -p 80:80 --name mywebapp \
+    --restart always \
+    --health-cmd='curl -f http://localhost/ || exit 1' \
+    --health-interval=30s \
+    --health-retries=3 \
+    --health-start-period=30s \
+    dockerusername/mydockerimage:latest
+
+# Remove the temporary old container
+echo "Removing the temporary old container..."
+sudo docker rm mywebapp_old_temp
+Apply and Save
+v.	Go to repo in github settings  webhooks  Add Webhook  publicpip:8080/github-webhook/
+vi.	Sudo visudo (need to add this so the Jenkins user doesn’t not require password)
+Jenkins	ALL=(ALL) NOPASSWD: ALL
